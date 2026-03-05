@@ -24,6 +24,7 @@ from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
+from deepagents.middleware.system_mode_routing import SystemModeConfig, SystemModeRouter, SystemModeRoutingMiddleware
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
     CompiledSubAgent,
@@ -118,6 +119,9 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     checkpointer: Checkpointer | None = None,
     store: BaseStore | None = None,
     backend: BackendProtocol | BackendFactory | None = None,
+    enable_system_mode_routing: bool = False,
+    system_mode_router: SystemModeRouter | None = None,
+    system_mode_config: SystemModeConfig | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     debug: bool = False,
     name: str | None = None,
@@ -195,6 +199,14 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
 
             Pass either a `Backend` instance or a callable factory like `lambda rt: StateBackend(rt)`.
             For execution support, use a backend that implements `SandboxBackendProtocol`.
+        enable_system_mode_routing: Whether to enable tri-mode routing middleware
+            (deterministic / clarification / emergent) before model planning.
+        system_mode_router: Optional router callback for framework-level deterministic routing.
+
+            If provided, it receives agent state and can return routing decisions
+            including deterministic bypass responses.
+        system_mode_config: Optional threshold and clarification settings for
+            system-mode routing.
         interrupt_on: Mapping of tool names to interrupt configs.
 
             Pass to pause agent execution at specified tool calls for human approval or modification.
@@ -267,9 +279,10 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     all_subagents: list[SubAgent | CompiledSubAgent] = [general_purpose_spec, *processed_subagents]
 
     # Build main agent middleware stack
-    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(),
-    ]
+    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = []
+    if enable_system_mode_routing or system_mode_router is not None:
+        deepagent_middleware.append(SystemModeRoutingMiddleware(router=system_mode_router, config=system_mode_config))
+    deepagent_middleware.append(TodoListMiddleware())
     if memory is not None:
         deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
     if skills is not None:
