@@ -51,6 +51,9 @@ class SystemModeDecision(TypedDict, total=False):
         workflow_id: Optional workflow identifier for deterministic route.
         reason: Explanation for audit/debug visibility.
         assistant_message: Optional deterministic response to return without LLM call.
+        forced_tool_calls: Optional list of tool call dicts to force-execute without LLM.
+            Each dict must have ``id``, ``name``, ``args``, and ``type`` keys.
+            When provided, takes precedence over ``assistant_message``.
         state_update: Optional state updates to persist when deterministic bypass happens.
     """
 
@@ -59,6 +62,7 @@ class SystemModeDecision(TypedDict, total=False):
     workflow_id: str
     reason: str
     assistant_message: str
+    forced_tool_calls: list[dict[str, Any]]
     state_update: dict[str, Any]
 
 
@@ -221,13 +225,40 @@ class SystemModeRoutingMiddleware(AgentMiddleware[SystemModeState, ContextT, Res
             return None
 
         decision: SystemModeDecision = request.state.get("_system_mode_decision", {})
+
+        # Forced tool calls take precedence — true System-1 fast-path.
+        # The AIMessage contains tool_calls which the agent loop will execute
+        # directly (e.g. ``task(name="cost_analyzer")`` via SubAgentMiddleware).
+        forced_tool_calls = decision.get("forced_tool_calls")
+        if forced_tool_calls:
+            logger.info(
+                "System-1 deterministic bypass: forced_tool_calls=%s (reason=%s)",
+                [tc.get("name") for tc in forced_tool_calls],
+                decision.get("reason", "unknown"),
+            )
+            model_response: ModelResponse[ResponseT] = ModelResponse(
+                result=[AIMessage(content="", tool_calls=forced_tool_calls)]
+            )
+            command_update: dict[str, Any] = {
+                "execution_mode": "deterministic",
+                "routing_confidence": decision.get("confidence", request.state.get("routing_confidence", 0.0)),
+                "routing_workflow_id": decision.get("workflow_id", request.state.get("routing_workflow_id")),
+            }
+            if isinstance(decision.get("state_update"), dict):
+                command_update.update(decision["state_update"])
+            return ExtendedModelResponse(
+                model_response=model_response,
+                command=Command(update=command_update),
+            )
+
+        # Text-only bypass — returns a pre-built assistant message without LLM call.
         assistant_message = decision.get("assistant_message")
         if not assistant_message:
             return None
 
-        model_response: ModelResponse[ResponseT] = ModelResponse(result=[AIMessage(content=assistant_message)])
+        model_response = ModelResponse(result=[AIMessage(content=assistant_message)])
 
-        command_update: dict[str, Any] = {
+        command_update = {
             "execution_mode": "deterministic",
             "routing_confidence": decision.get("confidence", request.state.get("routing_confidence", 0.0)),
             "routing_workflow_id": decision.get("workflow_id", request.state.get("routing_workflow_id")),
