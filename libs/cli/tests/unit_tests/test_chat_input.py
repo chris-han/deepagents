@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
+import pytest
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.widgets import Static
 
-from deepagents_cli.input import ImageTracker
+from deepagents_cli.input import MediaTracker
 from deepagents_cli.widgets import chat_input as chat_input_module
-from deepagents_cli.widgets.autocomplete import SLASH_COMMANDS
+from deepagents_cli.widgets.autocomplete import MAX_SUGGESTIONS, SLASH_COMMANDS
 from deepagents_cli.widgets.chat_input import (
     ChatInput,
     CompletionOption,
@@ -19,6 +21,8 @@ from deepagents_cli.widgets.chat_input import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pytest
     from textual.pilot import Pilot
 
@@ -224,7 +228,7 @@ class _ImagePasteApp(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
-        self.tracker = ImageTracker()
+        self.tracker = MediaTracker()
 
     def compose(self) -> ComposeResult:
         yield ChatInput(id="chat-input", image_tracker=self.tracker)
@@ -235,7 +239,7 @@ class _ImagePasteRecordingApp(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
-        self.tracker = ImageTracker()
+        self.tracker = MediaTracker()
         self.submitted: list[ChatInput.Submitted] = []
 
     def compose(self) -> ComposeResult:
@@ -259,20 +263,20 @@ def _prompt_text(prompt: Static) -> str:
 class TestPromptIndicator:
     """Test that the prompt indicator reflects the current input mode."""
 
-    async def test_prompt_shows_bang_in_bash_mode(self) -> None:
-        """Setting mode to 'bash' should change prompt to '!' and apply bash styling."""
+    async def test_prompt_shows_bang_in_shell_mode(self) -> None:
+        """Mode 'shell' should change prompt to '!' and apply styling."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat_input = app.query_one(ChatInput)
             prompt = chat_input.query_one("#prompt", Static)
 
             assert _prompt_text(prompt) == ">"
-            assert not chat_input.has_class("mode-bash")
+            assert not chat_input.has_class("mode-shell")
 
-            chat_input.mode = "bash"
+            chat_input.mode = "shell"
             await pilot.pause()
-            assert _prompt_text(prompt) == "!"
-            assert chat_input.has_class("mode-bash")
+            assert _prompt_text(prompt) == "$"
+            assert chat_input.has_class("mode-shell")
 
     async def test_prompt_shows_slash_in_command_mode(self) -> None:
         """Setting mode to 'command' should change prompt and styling."""
@@ -293,15 +297,15 @@ class TestPromptIndicator:
             chat_input = app.query_one(ChatInput)
             prompt = chat_input.query_one("#prompt", Static)
 
-            chat_input.mode = "bash"
+            chat_input.mode = "shell"
             await pilot.pause()
-            assert _prompt_text(prompt) == "!"
-            assert chat_input.has_class("mode-bash")
+            assert _prompt_text(prompt) == "$"
+            assert chat_input.has_class("mode-shell")
 
             chat_input.mode = "normal"
             await pilot.pause()
             assert _prompt_text(prompt) == ">"
-            assert not chat_input.has_class("mode-bash")
+            assert not chat_input.has_class("mode-shell")
             assert not chat_input.has_class("mode-command")
 
     async def test_mode_change_posts_message(self) -> None:
@@ -319,9 +323,9 @@ class TestPromptIndicator:
         async with app.run_test() as pilot:
             chat_input = app.query_one(ChatInput)
 
-            chat_input.mode = "bash"
+            chat_input.mode = "shell"
             await pilot.pause()
-            assert any(m.mode == "bash" for m in messages)
+            assert any(m.mode == "shell" for m in messages)
 
 
 class TestHistoryNavigationFlag:
@@ -394,7 +398,7 @@ class TestHistoryBoundaryNavigation:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            chat._history._entries.append("previous entry")
+            chat._history._entries.append("say hello world")
 
             # Type text then move cursor to start
             chat._text_area.insert("hello")
@@ -405,7 +409,7 @@ class TestHistoryBoundaryNavigation:
             # Up arrow should trigger history (cursor at start)
             await pilot.press("up")
             await pilot.pause()
-            assert chat._text_area.text == "previous entry"
+            assert chat._text_area.text == "say hello world"
 
     async def test_down_arrow_navigates_from_start_when_in_history(self) -> None:
         """Down arrow at start navigates history when `_in_history` is True."""
@@ -677,7 +681,9 @@ class TestDismissCompletion:
             await _pause_for_strip(pilot)
 
             # Menu should reappear with all commands
-            assert len(chat._current_suggestions) == len(SLASH_COMMANDS)
+            assert len(chat._current_suggestions) == min(
+                len(SLASH_COMMANDS), MAX_SUGGESTIONS
+            )
             assert popup.styles.display == "block"
 
     async def test_popup_hide_cancels_pending_rebuild(self) -> None:
@@ -702,8 +708,8 @@ class TestDismissCompletion:
 class TestModePrefixStripping:
     """Test that mode-trigger characters are stripped from text input."""
 
-    async def test_typing_bang_strips_prefix_and_sets_bash_mode(self) -> None:
-        """Setting text to `'!ls'` should strip to `'ls'` and enter bash mode."""
+    async def test_typing_bang_strips_prefix_and_sets_shell_mode(self) -> None:
+        """Setting text to `'!ls'` should strip to `'ls'` and enter shell mode."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -712,7 +718,7 @@ class TestModePrefixStripping:
             chat._text_area.text = "!ls"
             await _pause_for_strip(pilot)
 
-            assert chat.mode == "bash"
+            assert chat.mode == "shell"
             assert chat._text_area.text == "ls"
 
     async def test_typing_slash_strips_prefix_and_sets_command_mode(self) -> None:
@@ -729,38 +735,38 @@ class TestModePrefixStripping:
             assert chat._text_area.text == ""
 
     async def test_mode_stays_on_empty_text(self) -> None:
-        """Clearing text after entering bash mode should stay in mode."""
+        """Clearing text after entering shell mode should stay in mode."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            # Enter bash mode
+            # Enter shell mode
             chat._text_area.text = "!ls"
             await _pause_for_strip(pilot)
-            assert chat.mode == "bash"
+            assert chat.mode == "shell"
 
             # Clear text — mode should persist (backspace on empty exits)
             chat._text_area.text = ""
             await pilot.pause()
-            assert chat.mode == "bash"
+            assert chat.mode == "shell"
 
     async def test_backspace_on_empty_exits_mode(self) -> None:
-        """Backspace on empty input in bash mode should reset to normal."""
+        """Backspace on empty input in shell mode should reset to normal."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            # Enter bash mode
+            # Enter shell mode
             chat._text_area.text = "!ls"
             await _pause_for_strip(pilot)
-            assert chat.mode == "bash"
+            assert chat.mode == "shell"
 
-            # Clear text — still in bash mode
+            # Clear text — still in shell mode
             chat._text_area.text = ""
             await pilot.pause()
-            assert chat.mode == "bash"
+            assert chat.mode == "shell"
 
             # Backspace on empty — exits mode
             await pilot.press("backspace")
@@ -790,6 +796,31 @@ class TestModePrefixStripping:
             assert chat.mode == "command"
 
             # Second backspace on empty — exits mode
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert chat.mode == "normal"
+
+    async def test_backspace_at_cursor_zero_with_text_exits_mode(self) -> None:
+        """Backspace at cursor position 0 with text after cursor exits mode."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Enter command mode and type some text
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+
+            chat._text_area.insert("help")
+            await pilot.pause()
+            assert chat._text_area.text == "help"
+
+            # Move cursor to position 0 (beginning of field)
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+
+            # Backspace at position 0 with text after cursor — should exit mode
             await pilot.press("backspace")
             await pilot.pause()
             assert chat.mode == "normal"
@@ -836,17 +867,17 @@ class TestModePrefixStripping:
             labels = [s[0] for s in chat._current_suggestions]
             assert "/help" in labels
 
-    async def test_submission_prepends_bash_prefix(self) -> None:
-        """Submitting in bash mode should prepend `'!'` to the value."""
+    async def test_submission_prepends_shell_prefix(self) -> None:
+        """Submitting in shell mode should prepend `'!'` to the value."""
         app = _RecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            # Enter bash mode
+            # Enter shell mode
             chat._text_area.text = "!ls"
             await _pause_for_strip(pilot)
-            assert chat.mode == "bash"
+            assert chat.mode == "shell"
             assert chat._text_area.text == "ls"
 
             # Submit
@@ -856,7 +887,7 @@ class TestModePrefixStripping:
             # Should have received "!ls"
             assert len(app.submitted) == 1
             assert app.submitted[0].value == "!ls"
-            assert app.submitted[0].mode == "bash"
+            assert app.submitted[0].mode == "shell"
 
     async def test_submission_prepends_command_prefix(self) -> None:
         """Submitting in command mode should prepend `'/'` to the value."""
@@ -893,10 +924,10 @@ class TestModePrefixStripping:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            # Enter bash mode and submit
+            # Enter shell mode and submit
             chat._text_area.text = "!ls"
             await _pause_for_strip(pilot)
-            assert chat.mode == "bash"
+            assert chat.mode == "shell"
 
             await pilot.press("enter")
             await pilot.pause()
@@ -905,25 +936,25 @@ class TestModePrefixStripping:
             assert chat._text_area.text == ""
 
     async def test_mode_sticky_during_typing(self) -> None:
-        """Mode should persist while typing in bash/command mode."""
+        """Mode should persist while typing in shell/command mode."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            # Enter bash mode
+            # Enter shell mode
             chat._text_area.text = "!echo hello"
             await _pause_for_strip(pilot)
-            assert chat.mode == "bash"
+            assert chat.mode == "shell"
             assert chat._text_area.text == "echo hello"
 
-            # Continue typing — mode stays bash
+            # Continue typing — mode stays shell
             chat._text_area.text = "echo hello world"
             await pilot.pause()
-            assert chat.mode == "bash"
+            assert chat.mode == "shell"
 
-    async def test_bash_mode_does_not_trigger_completions(self) -> None:
-        """Typing in bash mode should not trigger completions."""
+    async def test_shell_mode_does_not_trigger_completions(self) -> None:
+        """Typing in shell mode should not trigger completions."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -931,7 +962,7 @@ class TestModePrefixStripping:
 
             chat._text_area.text = "!echo"
             await _pause_for_strip(pilot)
-            assert chat.mode == "bash"
+            assert chat.mode == "shell"
             assert chat._current_suggestions == []
 
     async def test_submission_does_not_double_prefix(self) -> None:
@@ -942,7 +973,7 @@ class TestModePrefixStripping:
             assert chat._text_area is not None
 
             # Manually set mode and text that already has prefix
-            chat.mode = "bash"
+            chat.mode = "shell"
             chat._stripping_prefix = True  # prevent mode re-detection
             chat._text_area.text = "!already-prefixed"
             await pilot.pause()
@@ -954,11 +985,53 @@ class TestModePrefixStripping:
             assert app.submitted[0].value == "!already-prefixed"
 
 
-class TestHistoryRecallModeReset:
-    """Regression: history recall must not inherit a stale bash/command mode."""
+class TestExitModePreservesText:
+    """Exiting shell/command mode should preserve typed text."""
 
-    async def test_history_non_prefixed_entry_resets_bash_mode(self) -> None:
-        """Recalling a normal-mode entry while in bash mode should reset to normal."""
+    async def test_exit_shell_mode_keeps_text(self) -> None:
+        """Pressing Escape in shell mode should switch to normal but keep text."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Enter shell mode with some text
+            chat._text_area.text = "!ls -la"
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell"
+            assert chat._text_area.text == "ls -la"
+
+            # Exit mode — text should be preserved
+            assert chat.exit_mode() is True
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "ls -la"
+
+    async def test_exit_command_mode_keeps_text(self) -> None:
+        """Pressing Escape in command mode should switch to normal but keep text."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+
+            chat.dismiss_completion()
+            chat._text_area.insert("help")
+            await pilot.pause()
+            assert chat._text_area.text == "help"
+
+            assert chat.exit_mode() is True
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "help"
+
+
+class TestHistoryRecallModeReset:
+    """Regression: history recall must not inherit a stale shell/command mode."""
+
+    async def test_history_non_prefixed_entry_resets_shell_mode(self) -> None:
+        """Recalling a normal-mode entry while in shell mode should reset to normal."""
         app = _RecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -967,10 +1040,14 @@ class TestHistoryRecallModeReset:
             # Seed history with a normal-mode entry
             chat._history._entries.append("echo hello")
 
-            # Enter bash mode
+            # Enter shell mode, then clear text so the history query is
+            # empty (matches all entries) — we're testing mode reset, not
+            # substring filtering.
             chat._text_area.text = "!ls"
             await _pause_for_strip(pilot)
-            assert chat.mode == "bash"
+            assert chat.mode == "shell"
+            chat._text_area.text = ""
+            await pilot.pause()
 
             # Press up to recall the non-prefixed history entry through
             # the ChatInput handler (which normalizes mode).
@@ -990,20 +1067,20 @@ class TestHistoryRecallModeReset:
             assert app.submitted[0].mode == "normal"
 
     async def test_history_prefixed_entry_keeps_mode(self) -> None:
-        """Recalling a bash-prefixed entry should re-enter bash mode."""
+        """Recalling a shell-prefixed entry should re-enter shell mode."""
         app = _RecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            # Seed history with a bash-mode entry
+            # Seed history with a shell-mode entry
             chat._history._entries.append("!ls")
 
             # Press up to recall the prefixed entry
             await pilot.press("up")
             await _pause_for_strip(pilot)
 
-            assert chat.mode == "bash"
+            assert chat.mode == "shell"
             assert chat._text_area.text == "ls"
 
             # Submit — should prepend "!"
@@ -1012,7 +1089,7 @@ class TestHistoryRecallModeReset:
 
             assert len(app.submitted) == 1
             assert app.submitted[0].value == "!ls"
-            assert app.submitted[0].mode == "bash"
+            assert app.submitted[0].mode == "shell"
 
     async def test_history_non_prefixed_entry_resets_command_mode(self) -> None:
         """Recalling a normal entry while in command mode should reset to normal."""
@@ -1250,7 +1327,7 @@ class TestDroppedImagePaste:
             # trailing space (unlike backspace which catches it).
             assert "[image" not in chat._text_area.text
             assert app.tracker.get_images() == []
-            assert app.tracker.next_id == 1
+            assert app.tracker.next_image_id == 1
 
     async def test_backspace_removes_full_image_placeholder(self, tmp_path) -> None:
         """Backspace should remove `[image N]` as a single token."""
@@ -1274,7 +1351,7 @@ class TestDroppedImagePaste:
 
             assert chat._text_area.text == ""
             assert app.tracker.get_images() == []
-            assert app.tracker.next_id == 1
+            assert app.tracker.next_image_id == 1
 
     async def test_readding_after_delete_restarts_image_counter(self, tmp_path) -> None:
         """Re-adding after deleting all placeholders should restart at `[image 1]`."""
@@ -1295,13 +1372,13 @@ class TestDroppedImagePaste:
 
             await pilot.press("backspace")
             await pilot.pause()
-            assert app.tracker.next_id == 1
+            assert app.tracker.next_image_id == 1
 
             chat.handle_external_paste(str(img_path))
             await pilot.pause()
             assert chat._text_area.text == "[image 1] "
             assert len(app.tracker.get_images()) == 1
-            assert app.tracker.next_id == 2
+            assert app.tracker.next_image_id == 2
 
     async def test_handle_external_paste_attaches_dropped_image(self, tmp_path) -> None:
         """External paste routing should attach dropped images."""
@@ -1643,7 +1720,7 @@ class TestDroppedImagePaste:
             # The tracker should have synced and cleared images since
             # the new text has no placeholders.
             assert app.tracker.get_images() == []
-            assert app.tracker.next_id == 1
+            assert app.tracker.next_image_id == 1
 
     async def test_submit_recovers_if_command_mode_already_stripped_path(
         self, tmp_path
@@ -1672,3 +1749,202 @@ class TestDroppedImagePaste:
             assert app.submitted[0].value == "[image 1]"
             assert app.submitted[0].mode == "normal"
             assert len(app.tracker.get_images()) == 1
+
+
+def _make_mp4_bytes() -> bytes:
+    """Return minimal valid MP4 ftyp box bytes."""
+    return (
+        b"\x00\x00\x00\x14"  # box size (20 bytes)
+        b"ftyp"  # box type
+        b"mp42"  # major brand
+        b"\x00\x00\x00\x00"  # minor version
+        b"mp42"  # compatible brand
+    )
+
+
+class TestDroppedVideoPaste:
+    """Tests for drag/drop video-path handling via paste events."""
+
+    async def test_paste_video_attaches_and_inserts_placeholder(
+        self, tmp_path: Path
+    ) -> None:
+        """Dropping a valid .mp4 should insert `[video 1]` placeholder."""
+        video_path = tmp_path / "clip.mp4"
+        video_path.write_bytes(_make_mp4_bytes())
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            assert chat.handle_external_paste(str(video_path))
+            await pilot.pause()
+
+            assert "[video 1]" in chat._text_area.text
+            assert len(app.tracker.get_videos()) == 1
+
+    async def test_backspace_removes_video_placeholder(self, tmp_path: Path) -> None:
+        """Backspace should remove `[video N]` as a single token."""
+        video_path = tmp_path / "clip.mp4"
+        video_path.write_bytes(_make_mp4_bytes())
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(video_path))
+            await pilot.pause()
+            assert "[video 1]" in chat._text_area.text
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert "[video" not in chat._text_area.text
+            assert app.tracker.get_videos() == []
+            assert app.tracker.next_video_id == 1
+
+    async def test_forward_delete_removes_video_placeholder(
+        self, tmp_path: Path
+    ) -> None:
+        """Forward-delete should remove `[video N]` as a single token."""
+        video_path = tmp_path / "clip.mp4"
+        video_path.write_bytes(_make_mp4_bytes())
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(video_path))
+            await pilot.pause()
+            assert "[video 1]" in chat._text_area.text
+
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+            await pilot.press("delete")
+            await pilot.pause()
+
+            assert "[video" not in chat._text_area.text
+            assert app.tracker.get_videos() == []
+
+    async def test_mixed_image_and_video_drop(self, tmp_path: Path) -> None:
+        """Dropping an image and video should produce both placeholder types."""
+        from PIL import Image
+
+        img_path = tmp_path / "photo.png"
+        image = Image.new("RGB", (4, 4), color="red")
+        image.save(img_path, format="PNG")
+
+        video_path = tmp_path / "clip.mp4"
+        video_path.write_bytes(_make_mp4_bytes())
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            payload = f"{img_path}\n{video_path}"
+            chat.handle_external_paste(payload)
+            await pilot.pause()
+
+            text = chat._text_area.text
+            assert "[image 1]" in text
+            assert "[video 1]" in text
+            assert len(app.tracker.get_images()) == 1
+            assert len(app.tracker.get_videos()) == 1
+
+
+class TestBackslashEnterNewline:
+    """Test that backslash followed quickly by enter inserts a newline.
+
+    Some terminals (e.g. VSCode built-in) send a literal backslash followed
+    by enter when the user presses shift+enter.  The widget detects this
+    pair and collapses it into a newline.
+    """
+
+    async def test_backslash_then_enter_inserts_newline(self) -> None:
+        """Rapid backslash + enter should produce a newline, not submit."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            await pilot.press("backslash")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert "\n" in ta.text
+            assert "\\" not in ta.text
+            assert len(app.submitted) == 0
+
+    async def test_backslash_alone_inserts_normally(self) -> None:
+        """A lone backslash should be inserted immediately as normal text."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            await pilot.press("backslash")
+            await pilot.pause()
+
+            assert ta.text == "\\"
+
+    async def test_backslash_then_letter_inserts_both(self) -> None:
+        """Backslash followed by a letter should insert both characters."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            await pilot.press("backslash")
+            await pilot.press("a")
+            await pilot.pause()
+
+            assert ta.text == "\\a"
+
+    async def test_backslash_enter_on_empty_prompt_does_not_submit(self) -> None:
+        """Backslash + enter on empty prompt should not submit."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            await pilot.press("backslash")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 0
+            assert "\\" not in ta.text
+            assert ta.text == "\n"
+
+    async def test_backslash_then_slow_enter_submits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Backslash + enter beyond the timing gap should submit normally."""
+        # Set gap to 0 so any real delay exceeds it.
+        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 0.0)
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            await pilot.press("backslash")
+            await asyncio.sleep(0.05)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            # Should have submitted (backslash included in text)
+            assert len(app.submitted) == 1

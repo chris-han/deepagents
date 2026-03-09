@@ -10,6 +10,7 @@ import pytest
 from deepagents_cli import model_config
 from deepagents_cli.config import (
     RECOMMENDED_SAFE_SHELL_COMMANDS,
+    SHELL_ALLOW_ALL,
     ModelResult,
     Settings,
     _create_model_from_class,
@@ -19,6 +20,7 @@ from deepagents_cli.config import (
     detect_provider,
     fetch_langsmith_project_url,
     get_langsmith_project_name,
+    newline_shortcut,
     parse_shell_allow_list,
     reset_langsmith_url_cache,
     settings,
@@ -187,6 +189,20 @@ class TestSettingsGetProjectAgentMdPath:
         s = Settings.__new__(Settings)
         s.project_root = tmp_path
         assert s.get_project_agent_md_path() == []
+
+
+class TestNewlineShortcut:
+    """Tests for platform-specific newline shortcut labels."""
+
+    def test_returns_option_enter_on_macos(self) -> None:
+        """Should show Option+Enter on darwin."""
+        with patch("deepagents_cli.config.sys.platform", "darwin"):
+            assert newline_shortcut() == "Option+Enter"
+
+    def test_returns_ctrl_j_on_non_macos(self) -> None:
+        """Should show Ctrl+J on non-darwin platforms."""
+        with patch("deepagents_cli.config.sys.platform", "linux"):
+            assert newline_shortcut() == "Ctrl+J"
 
 
 class TestValidateModelCapabilities:
@@ -754,6 +770,27 @@ class TestParseShellAllowList:
         # Which simplifies to: len(recommended) + 1
         assert len(result) == len(RECOMMENDED_SAFE_SHELL_COMMANDS) + 1
 
+    def test_all_returns_sentinel(self) -> None:
+        """Test that 'all' returns SHELL_ALLOW_ALL sentinel."""
+        result = parse_shell_allow_list("all")
+        assert result is SHELL_ALLOW_ALL
+
+    def test_all_case_insensitive(self) -> None:
+        """Test that 'ALL', 'All', etc. all return sentinel."""
+        for variant in ["ALL", "All", "aLl", "  all  "]:
+            result = parse_shell_allow_list(variant)
+            assert result is SHELL_ALLOW_ALL
+
+    def test_all_mixed_with_commands_raises(self) -> None:
+        """Combining 'all' with other commands should raise ValueError."""
+        with pytest.raises(ValueError, match="Cannot combine 'all'"):
+            parse_shell_allow_list("all,ls")
+
+    def test_all_mixed_case_insensitive_raises(self) -> None:
+        """Combining 'ALL' with other commands should also raise."""
+        with pytest.raises(ValueError, match="Cannot combine 'all'"):
+            parse_shell_allow_list("ls,ALL,cat")
+
     def test_empty_commands_ignored(self) -> None:
         """Test that empty strings from split are ignored."""
         result = parse_shell_allow_list("ls,,cat,,,grep,")
@@ -1216,41 +1253,37 @@ class TestOpenRouterHeaders:
         """Clear model config cache before each test."""
         clear_caches()
 
-    def test_injects_default_headers(self) -> None:
-        """Injects HTTP-Referer and X-Title for openrouter provider."""
+    def test_injects_attribution_kwargs(self) -> None:
+        """Injects app_url and app_title for openrouter provider."""
         kwargs = _get_provider_kwargs("openrouter")
 
-        assert "default_headers" in kwargs
-        assert kwargs["default_headers"]["HTTP-Referer"] == (
-            "https://github.com/langchain-ai/deepagents"
-        )
-        assert kwargs["default_headers"]["X-Title"] == "Deep Agents CLI"
+        assert kwargs["app_url"] == "https://github.com/langchain-ai/deepagents"
+        assert kwargs["app_title"] == "Deep Agents CLI"
 
-    def test_per_model_headers_override_defaults(self, tmp_path: Path) -> None:
-        """Per-model default_headers override built-in defaults."""
+    def test_per_model_attribution_overrides_defaults(self, tmp_path: Path) -> None:
+        """Per-model app_title overrides built-in default."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.openrouter]
 models = ["deepseek/deepseek-chat"]
 
 [models.providers.openrouter.params."deepseek/deepseek-chat"]
-default_headers = {X-Title = "My Custom App"}
+app_title = "My Custom App"
 """)
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             kwargs = _get_provider_kwargs(
                 "openrouter", model_name="deepseek/deepseek-chat"
             )
 
-        assert kwargs["default_headers"]["X-Title"] == "My Custom App"
-        # Built-in HTTP-Referer should still be present
-        assert kwargs["default_headers"]["HTTP-Referer"] == (
-            "https://github.com/langchain-ai/deepagents"
-        )
+        assert kwargs["app_title"] == "My Custom App"
+        # Built-in app_url should still be present
+        assert kwargs["app_url"] == "https://github.com/langchain-ai/deepagents"
 
-    def test_no_headers_for_other_providers(self) -> None:
-        """Other providers do not get OpenRouter attribution headers."""
+    def test_no_attribution_for_other_providers(self) -> None:
+        """Other providers do not get OpenRouter attribution kwargs."""
         kwargs = _get_provider_kwargs("openai")
-        assert "default_headers" not in kwargs
+        assert "app_url" not in kwargs
+        assert "app_title" not in kwargs
 
 
 class TestCreateModelFromClass:
@@ -1553,6 +1586,8 @@ class TestDetectProvider:
             ("claude-sonnet-4-5", "anthropic"),
             ("claude-opus-4-5", "anthropic"),
             ("gemini-3.1-pro-preview", "google_genai"),
+            ("nemotron-3-nano-30b-a3b", "nvidia"),
+            ("nvidia/nemotron-3-nano-30b-a3b", "nvidia"),
             ("llama3", None),
             ("mistral-large", None),
             ("some-unknown-model", None),
