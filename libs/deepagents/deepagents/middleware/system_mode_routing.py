@@ -226,7 +226,7 @@ class SystemModeRoutingMiddleware(AgentMiddleware[SystemModeState, ContextT, Res
 
         decision: SystemModeDecision = request.state.get("_system_mode_decision", {})
 
-        # Forced tool calls take precedence — true System-1 fast-path.
+        # Forced tool calls take precedence — true System-1 fast-track.
         # The AIMessage contains tool_calls which the agent loop will execute
         # directly (e.g. ``task(name="cost_analyzer")`` via SubAgentMiddleware).
         forced_tool_calls = decision.get("forced_tool_calls")
