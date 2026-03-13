@@ -1010,7 +1010,7 @@ def cli_main() -> None:
     # user's original LANGSMITH_PROJECT (via LocalShellBackend env).
 
     # Fast path: print version without loading heavy dependencies
-    if len(sys.argv) == 2 and sys.argv[1] in {"-v", "--version"}:  # noqa: PLR2004  # argv length check for fast-path
+    if len(sys.argv) == 2 and sys.argv[1] in {"-v", "--version"}:  # noqa: PLR2004  # argv length check for fast-track
         try:
             from importlib.metadata import (
                 PackageNotFoundError,

@@ -1,7 +1,7 @@
 """Benchmarks for CLI startup and import performance.
 
 The CLI defers heavy dependencies (langchain, agent, sessions, etc.) so that
-fast-path commands like `--help` and `--version` stay snappy. These tests guard
+fast-track commands like `--help` and `--version` stay snappy. These tests guard
 that invariant: if a top-level import is accidentally re-added, the relevant
 test will fail before the regression reaches users.
 
@@ -154,7 +154,7 @@ class TestImportIsolation:
 # ---------------------------------------------------------------------------
 # 2. CLI command timing
 #
-# Measure wall-clock time for common "fast-path" CLI invocations that should
+# Measure wall-clock time for common "fast-track" CLI invocations that should
 # NOT need the agent/LLM stack.
 # ---------------------------------------------------------------------------
 
