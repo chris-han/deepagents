@@ -55,7 +55,11 @@ from deepagents.middleware.system_mode_routing import (
     SystemModeRoutingMiddleware,
 )
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
-from deepagents.middleware.summarization import SummarizationMiddleware, SummarizationToolMiddleware
+from deepagents.middleware.summarization import (
+    SummarizationMiddleware,
+    SummarizationToolMiddleware,
+    create_summarization_tool_middleware,
+)
 
 __all__ = [
     "CompiledSubAgent",
@@ -68,4 +72,5 @@ __all__ = [
     "SubAgentMiddleware",
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",
+    "create_summarization_tool_middleware",
 ]
