@@ -47,30 +47,34 @@ Use a **plain tool** when:
 * The tool is specific to a single consumer (e.g. CLI-only)
 """
 
+from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentJob, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
-from deepagents.middleware.system_mode_routing import (
-    SystemModeConfig,
-    SystemModeRoutingMiddleware,
-)
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
 from deepagents.middleware.summarization import (
     SummarizationMiddleware,
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
 )
+from deepagents.middleware.system_mode_routing import (
+    SystemModeConfig,
+    SystemModeRoutingMiddleware,
+)
 
 __all__ = [
+    "AsyncSubAgent",
+    "AsyncSubAgentJob",
+    "AsyncSubAgentMiddleware",
     "CompiledSubAgent",
     "FilesystemMiddleware",
     "MemoryMiddleware",
     "SkillsMiddleware",
-    "SystemModeConfig",
-    "SystemModeRoutingMiddleware",
     "SubAgent",
     "SubAgentMiddleware",
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",
+    "SystemModeConfig",
+    "SystemModeRoutingMiddleware",
     "create_summarization_tool_middleware",
 ]

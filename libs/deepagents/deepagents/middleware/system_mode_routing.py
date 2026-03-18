@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Annotated, Callable, Literal, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Annotated, Any, Callable, Literal, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -52,8 +52,8 @@ class SystemModeDecision(TypedDict, total=False):
         reason: Explanation for audit/debug visibility.
         assistant_message: Optional deterministic response to return without LLM call.
         forced_tool_calls: Optional list of tool call dicts to force-execute without LLM.
-            Each dict must have ``id``, ``name``, ``args``, and ``type`` keys.
-            When provided, takes precedence over ``assistant_message``.
+            Each dict must have `id`, `name`, `args`, and `type` keys.
+            When provided, takes precedence over `assistant_message`.
         state_update: Optional state updates to persist when deterministic bypass happens.
     """
 
@@ -110,8 +110,9 @@ class SystemModeRoutingMiddleware(AgentMiddleware[SystemModeState, ContextT, Res
     2. Threshold-based mode selection using `confidence_level` from state.
 
     Deterministic bypass:
-    If mode is deterministic and `assistant_message` is provided by the router,
-    this middleware returns that response directly without invoking the LLM.
+    If mode is deterministic and `forced_tool_calls` or `assistant_message` is provided
+    by the router, this middleware returns that response directly without invoking the LLM.
+    `forced_tool_calls` takes precedence over `assistant_message`.
     """
 
     state_schema = SystemModeState
@@ -228,7 +229,7 @@ class SystemModeRoutingMiddleware(AgentMiddleware[SystemModeState, ContextT, Res
 
         # Forced tool calls take precedence — true System-1 fast-track.
         # The AIMessage contains tool_calls which the agent loop will execute
-        # directly (e.g. ``task(name="cost_analyzer")`` via SubAgentMiddleware).
+        # directly (e.g. `task(name="cost_analyzer")` via SubAgentMiddleware).
         forced_tool_calls = decision.get("forced_tool_calls")
         if forced_tool_calls:
             logger.info(
