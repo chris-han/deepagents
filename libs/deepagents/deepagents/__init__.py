@@ -6,6 +6,7 @@ from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentJo
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
+from deepagents.middleware.system_mode_routing import SystemModeConfig, SystemModeRoutingMiddleware
 
 __all__ = [
     "AsyncSubAgent",
@@ -16,6 +17,8 @@ __all__ = [
     "MemoryMiddleware",
     "SubAgent",
     "SubAgentMiddleware",
+    "SystemModeConfig",
+    "SystemModeRoutingMiddleware",
     "__version__",
     "create_deep_agent",
 ]
