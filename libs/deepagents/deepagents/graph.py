@@ -85,7 +85,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
     *,
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware] = (),
-    subagents: Sequence[SubAgent | CompiledSubAgent] | None = None,
+    pre_middleware: Sequence[AgentMiddleware] = (),
+    subagents: list[SubAgent | CompiledSubAgent] | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
@@ -254,9 +255,8 @@ def create_deep_agent(  # noqa: C901, PLR0912  # Complex graph assembly logic wi
         all_subagents = [general_purpose_spec, *processed_subagents]
 
     # Build main agent middleware stack
-    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        TodoListMiddleware(),
-    ]
+    deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = list(pre_middleware)
+    deepagent_middleware.append(TodoListMiddleware())
     if memory is not None:
         deepagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory))
     if skills is not None:
