@@ -20,14 +20,13 @@ from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
     ContextT,
-    ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
     PrivateStateAttr,
     ResponseT,
+    hook_config,
 )
 from langchain_core.messages import AIMessage
-from langgraph.types import Command
 
 from deepagents.middleware._utils import append_to_system_message
 
@@ -54,6 +53,8 @@ class SystemModeDecision(TypedDict, total=False):
         forced_tool_calls: Optional list of tool call dicts to force-execute without LLM.
             Each dict must have ``id``, ``name``, ``args``, and ``type`` keys.
             When provided, takes precedence over ``assistant_message``.
+            The middleware injects these as an ``AIMessage`` in ``before_model`` and jumps
+            directly to the ``tools`` node, bypassing the ``model`` node entirely.
         state_update: Optional state updates to persist when deterministic bypass happens.
     """
 
@@ -109,9 +110,15 @@ class SystemModeRoutingMiddleware(AgentMiddleware[SystemModeState, ContextT, Res
     1. Custom router decision, if provided.
     2. Threshold-based mode selection using `confidence_level` from state.
 
-    Deterministic bypass:
-    If mode is deterministic and `assistant_message` is provided by the router,
-    this middleware returns that response directly without invoking the LLM.
+    Deterministic bypass (System-1):
+    When mode is ``deterministic`` and the router decision contains
+    ``forced_tool_calls``, the ``before_model`` hook injects a synthetic
+    ``AIMessage`` carrying those tool calls and sets ``jump_to="tools"``.
+    The LangGraph engine therefore **skips the ``model`` node entirely** and
+    routes straight to the ``tools`` node.
+
+    When ``assistant_message`` is set instead, ``before_model`` injects the
+    message and sets ``jump_to="end"``, skipping both model and tools.
     """
 
     state_schema = SystemModeState
@@ -212,85 +219,100 @@ class SystemModeRoutingMiddleware(AgentMiddleware[SystemModeState, ContextT, Res
             "- Keep user-visible updates concise and action-oriented."
         )
 
+    @hook_config(can_jump_to=["tools", "end"])
+    def before_model(
+        self,
+        state: SystemModeState,
+        runtime: Runtime,
+        config: RunnableConfig,
+    ) -> dict[str, Any] | None:
+        """System-1 bypass: skip the model node entirely for deterministic routes.
+
+        - ``forced_tool_calls`` → injects AIMessage with tool_calls + ``jump_to="tools"``.
+          The model node is never executed; tool dispatch happens directly.
+        - ``assistant_message`` → injects AIMessage with text content + ``jump_to="end"``.
+          Both model and tools nodes are skipped.
+        - Otherwise → returns ``None`` (falls through to model for emergent/clarification).
+        """
+        mode = state.get("execution_mode")
+        if mode != "deterministic":
+            return None
+
+        decision: SystemModeDecision = state.get("_system_mode_decision", {})
+
+        # Forced tool calls — true System-1 fast-path.
+        # Injects tool calls directly, bypassing the model node.
+        forced_tool_calls = decision.get("forced_tool_calls")
+        if forced_tool_calls:
+            logger.info(
+                "System-1 bypass (before_model): forced_tool_calls=%s (reason=%s)",
+                [tc.get("name") for tc in forced_tool_calls],
+                decision.get("reason", "unknown"),
+            )
+            update: dict[str, Any] = {
+                "messages": [AIMessage(content="", tool_calls=forced_tool_calls)],
+                "jump_to": "tools",
+                "execution_mode": "deterministic",
+                "routing_confidence": decision.get("confidence", state.get("routing_confidence", 0.0)),
+                "routing_workflow_id": decision.get("workflow_id", state.get("routing_workflow_id")),
+            }
+            if isinstance(decision.get("state_update"), dict):
+                update.update(decision["state_update"])
+            return update
+
+        # Text-only bypass — skip model and tools, go directly to end.
+        assistant_message = decision.get("assistant_message")
+        if assistant_message:
+            logger.info(
+                "System-1 bypass (before_model): assistant_message (reason=%s)",
+                decision.get("reason", "unknown"),
+            )
+            update = {
+                "messages": [AIMessage(content=assistant_message)],
+                "jump_to": "end",
+                "execution_mode": "deterministic",
+                "routing_confidence": decision.get("confidence", state.get("routing_confidence", 0.0)),
+                "routing_workflow_id": decision.get("workflow_id", state.get("routing_workflow_id")),
+            }
+            if isinstance(decision.get("state_update"), dict):
+                update.update(decision["state_update"])
+            return update
+
+        return None
+
+    async def abefore_model(
+        self,
+        state: SystemModeState,
+        runtime: Runtime,
+        config: RunnableConfig,
+    ) -> dict[str, Any] | None:
+        """Async variant — delegates to sync before_model (all logic is synchronous)."""
+        return self.before_model(state, runtime, config)
+
     def modify_request(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
+        """Inject system-mode instructions into the system prompt for non-bypass paths."""
         mode = request.state.get("execution_mode", "emergent")
         decision = request.state.get("_system_mode_decision", {})
         mode_text = self._mode_instructions(mode, decision)
         new_system_message = append_to_system_message(request.system_message, mode_text)
         return request.override(system_message=new_system_message)
 
-    def _try_deterministic_bypass(self, request: ModelRequest[ContextT]) -> ExtendedModelResponse[ResponseT] | None:
-        mode = request.state.get("execution_mode")
-        if mode != "deterministic":
-            return None
-
-        decision: SystemModeDecision = request.state.get("_system_mode_decision", {})
-
-        # Forced tool calls take precedence — true System-1 fast-track.
-        # The AIMessage contains tool_calls which the agent loop will execute
-        # directly (e.g. ``task(name="cost_analyzer")`` via SubAgentMiddleware).
-        forced_tool_calls = decision.get("forced_tool_calls")
-        if forced_tool_calls:
-            logger.info(
-                "System-1 deterministic bypass: forced_tool_calls=%s (reason=%s)",
-                [tc.get("name") for tc in forced_tool_calls],
-                decision.get("reason", "unknown"),
-            )
-            model_response: ModelResponse[ResponseT] = ModelResponse(
-                result=[AIMessage(content="", tool_calls=forced_tool_calls)]
-            )
-            command_update: dict[str, Any] = {
-                "execution_mode": "deterministic",
-                "routing_confidence": decision.get("confidence", request.state.get("routing_confidence", 0.0)),
-                "routing_workflow_id": decision.get("workflow_id", request.state.get("routing_workflow_id")),
-            }
-            if isinstance(decision.get("state_update"), dict):
-                command_update.update(decision["state_update"])
-            return ExtendedModelResponse(
-                model_response=model_response,
-                command=Command(update=command_update),
-            )
-
-        # Text-only bypass — returns a pre-built assistant message without LLM call.
-        assistant_message = decision.get("assistant_message")
-        if not assistant_message:
-            return None
-
-        model_response = ModelResponse(result=[AIMessage(content=assistant_message)])
-
-        command_update = {
-            "execution_mode": "deterministic",
-            "routing_confidence": decision.get("confidence", request.state.get("routing_confidence", 0.0)),
-            "routing_workflow_id": decision.get("workflow_id", request.state.get("routing_workflow_id")),
-        }
-        if isinstance(decision.get("state_update"), dict):
-            command_update.update(decision["state_update"])
-
-        return ExtendedModelResponse(
-            model_response=model_response,
-            command=Command(update=command_update),
-        )
-
     def wrap_model_call(
         self,
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
-    ) -> ModelResponse[ResponseT] | ExtendedModelResponse[ResponseT]:
-        bypass_response = self._try_deterministic_bypass(request)
-        if bypass_response is not None:
-            return bypass_response
+    ) -> ModelResponse[ResponseT]:
+        """Inject mode instructions into the system prompt, then call the model.
 
-        modified_request = self.modify_request(request)
-        return handler(modified_request)
+        Bypass cases (forced_tool_calls / assistant_message) are handled in
+        ``before_model`` before this is ever reached.
+        """
+        return handler(self.modify_request(request))
 
     async def awrap_model_call(
         self,
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
-    ) -> ModelResponse[ResponseT] | ExtendedModelResponse[ResponseT]:
-        bypass_response = self._try_deterministic_bypass(request)
-        if bypass_response is not None:
-            return bypass_response
-
-        modified_request = self.modify_request(request)
-        return await handler(modified_request)
+    ) -> ModelResponse[ResponseT]:
+        """Async variant of wrap_model_call."""
+        return await handler(self.modify_request(request))
